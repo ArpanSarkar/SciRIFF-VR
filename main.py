@@ -112,8 +112,10 @@ def bleu(entries):
     bleu_scorer = evaluate.load("bleu")
     predictions = [entry["pred"] for entry in entries]
     references = [entry["ref"] for entry in entries]
-
-    res = bleu_scorer.compute(predictions=predictions, references=references)
+    try:
+        res = bleu_scorer.compute(predictions=predictions, references=references)
+    except ZeroDivisionError:
+        return 0.
     return res["bleu"]
 
 def relation_f1(entries, tup_len, overlap_thresh=0.3):
@@ -505,17 +507,18 @@ TASK_KWARGS = {
     }, # fact check
 }
 
-task = "scifact_entailment"
-pred_dir = f"example/Qwen2.5-7B-Instruct/{task}/raw_predictions.jsonl"
-max_instances = None
-evaluator = TASK_MAPPING[task]
-entries = get_raw_predictions(fname=pred_dir, max_instances=max_instances)
-# entries = [{"prompt": prompt, "pred": pred, "ref": ref}, ...] 
-if task in TASK_KWARGS:
-    score = evaluator(entries, **TASK_KWARGS[task])
-else: 
-    score = evaluator(entries)
+if __name__ == "__main__":
+    task = "scifact_entailment"
+    pred_dir = f"example/Qwen2.5-7B-Instruct/{task}/raw_predictions.jsonl"
+    max_instances = None
+    evaluator = TASK_MAPPING[task]
+    entries = get_raw_predictions(fname=pred_dir, max_instances=max_instances)
+    # entries = [{"prompt": prompt, "pred": pred, "ref": ref}, ...] 
+    if task in TASK_KWARGS:
+        score = evaluator(entries, **TASK_KWARGS[task])
+    else: 
+        score = evaluator(entries)
 
-print(score)
+    print(score)
 
 
