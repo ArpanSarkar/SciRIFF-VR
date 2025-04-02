@@ -17,6 +17,7 @@ import argparse
 import json
 import pandas as pd
 import numpy as np
+import random
 import sys
 
 from main import *
@@ -43,30 +44,29 @@ def find_files_with_substring(directory, substring):
             matching_files.append(absolute_path)
     return matching_files
 
+import random
+
 def eval_self_consistent_task(task, parent_dir, compare_all=False):
     """
-    Evaluate one task using self-consistency. ### check Alan note on this
+    Evaluate one task using self-consistency.
     
-    For each prompt, we:
-      1. Loop over all candidate predictions (dynamically determined) and compute a score for each,
-         wrapping the score as a tuple if needed.
-      2. Determine the maximum tuple length among candidate scores for that prompt.
-      3. Filter out any candidate scores that do not have that maximum length.
-      4. Compute the element-wise standard deviation of the filtered candidate scores.
-      5. In parallel, compute the candidate prediction length (character count from the 'pred' key)
-         for each candidate and compute the standard deviation in these lengths.
-      6. Select the best candidate using Python’s lexicographical tuple comparison.
+    For each prompt:
+      1. Loop over all candidate predictions and compute a score for each, wrapping the score as a tuple if needed.If a formatting error occurs, skip that candidate.
+      2. Compute the candidate prediction length (character count from the 'pred' key) for each candidate.
+      3. If at least 2 candidate scores (or lengths) exist, compute their element-wise standard deviation;
+         otherwise, set the standard deviation to None.
+      4. Select the best candidate. If no candidate scores were collected, randomly select one.
     
     After processing all prompts, average:
-      - The per-prompt score standard deviations (only from prompts whose candidate scores have the global maximum tuple length) → avg_score_std.
-      - The per-prompt length standard deviations → avg_length_std.
+      - The per-prompt candidate score standard deviations → avg_score_std.
+      - The per-prompt candidate length standard deviations → avg_length_std.
       - The best candidate lengths → avg_best_length.
     
     Returns a dictionary with:
-      - "aggregated": the aggregated score computed from the best candidate outputs.
-      - "avg_score_std": the average per-prompt candidate score standard deviation (element-wise if applicable).
+      - "aggregated": the score computed from the best candidate outputs.
+      - "avg_score_std": the average per-prompt candidate score standard deviation.
       - "avg_best_length": the average length (in characters) of the best candidate predictions.
-      - "avg_length_std": the average per-prompt standard deviation in candidate prediction lengths.
+      - "avg_length_std": the average per-prompt candidate length standard deviation.
     """
     pred_dirs = find_files_with_substring(parent_dir, substring=task)
     if len(pred_dirs) != 1:
@@ -79,12 +79,11 @@ def eval_self_consistent_task(task, parent_dir, compare_all=False):
     task_len = len(n_entries)
     ref_entries = get_raw_refs(fname=pred_dir, max_instances=max_instances)
     
-    best_preds = []       # Index of best candidate per prompt.
-    best_scores = []      # Best candidate scores (as tuples).
-    score_std_list = []   # Per-prompt candidate score standard deviations.
-    length_std_list = []  # Per-prompt candidate length standard deviations.
-    best_lengths = []     # Best candidate lengths (character count).
-    prompt_lengths = []   # Maximum tuple length per prompt.
+    best_preds = []       # Index of best candidate per prompt
+    best_scores = []      # Best candidate scores (as tuples)
+    score_std_list = []   # Per-prompt candidate score standard deviations
+    length_std_list = []  # Per-prompt candidate length standard deviations
+    best_lengths = []     # Best candidate lengths (character count)
     
     for i in tqdm(range(task_len), desc=f"Evaluating {task}", file=sys.stdout):
         current_n = len(n_entries[i])
@@ -96,64 +95,66 @@ def eval_self_consistent_task(task, parent_dir, compare_all=False):
                     score = evaluator(n_entries[i][j], **TASK_KWARGS[task])
                 else:
                     score = evaluator(n_entries[i][j])
-            except ValueError as e:
-                print(f"Formatting error {e} for task {task} with entry {n_entries[i][j]}", flush=True)
-                score = 0
+            except Exception as e:
+                print(f"Formatting error {e} for task {task}", flush=True)
+                continue
             # Wrap score as tuple if necessary.
             if isinstance(score, (list, tuple)):
                 candidate_scores.append(tuple(score))
             else:
                 candidate_scores.append((score,))
-            # Compute candidate length as character count of the 'pred' (from the first dictionary).
             try:
                 length = len(str(n_entries[i][j][0]["pred"]))
             except Exception as e:
-                print(f"Error computing output length for candidate: {n_entries[i][j]}", flush=True)
-                length = 0
+                print(f"Error computing output length for task {task}: {e}", flush=True)
+                continue
             candidate_lengths.append(length)
         
-        # Determine maximum tuple length for this prompt.
-        current_max_length = max(len(s) for s in candidate_scores)
-        prompt_lengths.append(current_max_length)
-        # Filter candidate scores: only keep those with full length.
-        filtered_scores = [s for s in candidate_scores if len(s) == current_max_length]
-        if len(filtered_scores) > 0:
-            arr_scores = np.array(filtered_scores, dtype=float)
+        # Compute candidate score standard deviation if at least 2 scores are available
+        if len(candidate_scores) >= 2:
+            arr_scores = np.array(candidate_scores, dtype=float)
             std_candidate = np.std(arr_scores, axis=0)
         else:
             std_candidate = None
         score_std_list.append(std_candidate)
         
-        # Compute standard deviation in candidate lengths.
-        arr_lengths = np.array(candidate_lengths, dtype=float)
-        std_length = float(np.std(arr_lengths))
+        # Compute candidate length standard deviation if at least 2 lengths are available
+        if len(candidate_lengths) >= 2:
+            arr_lengths = np.array(candidate_lengths, dtype=float)
+            std_length = float(np.std(arr_lengths))
+        else:
+            std_length = None
         length_std_list.append(std_length)
         
-        # Select best candidate using lexicographical max.
-        best_idx = candidate_scores.index(max(candidate_scores)) if candidate_scores else 0
+        # Select best candidate: if candidate_scores is empty, randomly select one
+        if candidate_scores:
+            best_idx = candidate_scores.index(max(candidate_scores))
+        else:
+            best_idx = random.randint(0, current_n - 1)
         best_preds.append(best_idx)
-        best_scores.append(candidate_scores[best_idx])
+        best_scores.append(candidate_scores[best_idx] if candidate_scores else None)
+        # Record best candidate length.
         best_length = len(str(n_entries[i][best_idx][0]["pred"]))
         best_lengths.append(best_length)
     
-    # Global maximum tuple length across prompts.
-    global_max = max(prompt_lengths) if prompt_lengths else 1
-    # Average per-prompt score std for prompts that reached global_max.
-    valid_score_stds = [v for v, l in zip(score_std_list, prompt_lengths) if v is not None and l == global_max]
-    if len(valid_score_stds) == 0:
-        avg_score_std = None
-    else:
-        if global_max == 1:
+    # Average per-prompt score standard deviation (ignoring None values)
+    valid_score_stds = [v for v in score_std_list if v is not None]
+    if valid_score_stds:
+        if all(len(v) == 1 for v in valid_score_stds):
             avg_score_std = float(np.mean(valid_score_stds))
         else:
             arr_stds = np.array(valid_score_stds, dtype=float)
             avg_score_std = arr_stds.mean(axis=0).tolist()
-    # Average per-prompt length std.
-    avg_length_std = float(np.mean(length_std_list)) if length_std_list else None
-    # Average best candidate length.
+    else:
+        avg_score_std = None
+    
+    # Average per-prompt length standard deviation
+    valid_length_stds = [v for v in length_std_list if v is not None]
+    avg_length_std = float(np.mean(valid_length_stds)) if valid_length_stds else None
+    # Average best candidate length
     avg_best_length = float(np.mean(best_lengths)) if best_lengths else None
     
-    # Extract best candidate outputs.
+    # Extract best candidate outputs
     best_entries = [entry[best_idx][0] for entry, best_idx in zip(n_entries, best_preds)]
     for entry, ref in zip(best_entries, ref_entries):
         entry['ref'] = ref['ref']
@@ -210,19 +211,19 @@ def run_evaluation_for_model_tasks(model, tasks, results_root, compare_all=False
 
 def update_global_scores(global_scores_path, model, scores):
     """
-    Update (or create) a global CSV file with one row per model.
+    Update (or create) a global TSV file with one row per model
     
     For each task, write the metrics in the following order:
-      1. Aggregated score. If it's a tuple, create separate columns for each element.
-      2. Average score standard deviation. If it is a tuple (list), create separate columns.
-      3. Average best candidate length.
-      4. Average candidate length standard deviation.
+      1. Aggregated score. If it's a tuple, create separate columns for each element
+      2. Average score standard deviation. If it is a tuple (list), create separate columns
+      3. Average best candidate length
+      4. Average candidate length standard deviation
     
-    The model's base name (last part of the model path) is used as the row key.
-    For aggregated and average score standard deviation, if they are lists, they are split into separate columns.
+    The model's base name (last part of the model path) is used as the row key
+    For aggregated and average score standard deviation, if they are lists, they are split into separate columns
     """
     if os.path.exists(global_scores_path):
-        df = pd.read_csv(global_scores_path, index_col=0)
+        df = pd.read_csv(global_scores_path, index_col=0, sep="\t")
     else:
         df = pd.DataFrame()
     
@@ -255,17 +256,17 @@ def update_global_scores(global_scores_path, model, scores):
     else:
         df.loc[model_name] = new_series
     os.makedirs(os.path.dirname(global_scores_path), exist_ok=True)
-    df.to_csv(global_scores_path)
+    df.to_csv(global_scores_path, sep="\t")
     return df
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate SciRIFF outputs with verifiable rewards.")
+    parser = argparse.ArgumentParser(description="Evaluate SciRIFF outputs with verifiable rewards")
     parser.add_argument("--parent_dir", type=str, required=True,
                         help="Parent directory for results")
     parser.add_argument("--model", type=str, required=True,
-                        help="Model path (e.g., HuggingFaceModels/DeepSeek-R1-Distill-Qwen-7B). For multiple models, separate by commas (no spaces).")
+                        help="Model path (e.g., hf_models/DeepSeek-R1-Distill-Qwen-7B). For multiple models, separate by commas (no spaces)")
     parser.add_argument("--tasks", type=str, default="bioasq_list_qa,biored_ner,discomat_te,evidence_inference,multicite_intent_classification,scierc_ner,scifact_entailment",
-                        help="Comma-separated list of tasks to evaluate (if not provided, all default tasks will be evaluated).")
+                        help="Comma-separated list of tasks to evaluate (if not provided, all default tasks will be evaluated)")
     args = parser.parse_args()
     
     models = [m.strip() for m in args.model.split(",")]
@@ -274,7 +275,7 @@ def main():
     
     global_scores_dir = os.path.join(results_root, "metrics")
     os.makedirs(global_scores_dir, exist_ok=True)
-    global_scores_path = os.path.join(global_scores_dir, "scores.csv")
+    global_scores_path = os.path.join(global_scores_dir, "scores.tsv")
     
     for model in models:
         print(f"Processing model: {model}", flush=True)
