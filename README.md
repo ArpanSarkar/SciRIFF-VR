@@ -30,6 +30,6 @@ python self-consistency.py \
 Default tasks evaluated:
 bioasq_list_qa, biored_ner, discomat_te, evidence_inference, multicite_intent_classification, scierc_ner, scifact_entailment
 
-A global CSV is generated at `/<parent_dir>/metrics/scores.csv`.
+A global TSV is generated at `/<parent_dir>/metrics/scores.tsv`.
 
 **Note** that parsing of model outputs for each task assumes formatting from `predict_eleuther.py` from the SciRIFF repo
